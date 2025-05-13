@@ -1,0 +1,174 @@
+---
+title: "Pricing Cars"
+author: "Tyler Engalla"
+date: "2024-12-09"
+output: pdf_document
+---
+# Pricing Cars 
+To predict the price of a car based on a set of the car's features, the supervised learning method I chose was a Linear Regression model. This method was chosen as a straight forward means of getting to a predicted price based on 15 features: trim, subTrim, condition, isOneOwner, mileage, year, color, displacement, fuel, state, region, soundSystem, wheelType, wheelSize, featureCount.
+
+The first step was to explore the data set. There was some pre-processing that needed to be done such as checking for missing values and converting the categorical variables into factors. 
+
+Once the data was prepped, the next step was to split the data into training and testing data sets so that we can see how the model performs against unseen data. 
+
+Then we run the linear model. This allows us to identify significant predictors and also refine the model as we go by excluding features based on contextual hunches and statistical significance. 
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(xgboost)
+library(ggplot2)
+library(glmnet)
+
+# Load data
+cars <- read.csv("~/Desktop/MSBA/Classwork/Intro to Machine Learning/R/R data/cars_big.csv", stringsAsFactors=TRUE)
+
+# Explore data
+#str(cars)
+#summary(cars)
+
+# check for nas - none in data 
+sum(is.na(cars))
+
+# convert categorical variables to factors done during upload 
+
+# Split data into training and testing
+set.seed(123)
+trainIndex <- createDataPartition(cars$price, p=.8, list = FALSE)
+train_data <- cars[trainIndex, ]
+test_data <- cars[-trainIndex, ]
+
+# Linear Regression 
+linear_model <- lm(price~., data = train_data)
+summary(linear_model)
+
+# Evaluate performance of first linear model  
+predictions_linear <- predict(linear_model, newdata = test_data)
+linear_rmse <- sqrt(mean((test_data$price - predictions_linear)^2))
+print(paste("Linear RMSE:", linear_rmse))
+
+# Simplify model using contextual knowledge to simply into 3 features believed most important 
+refined_linear_model <- lm(price ~ condition + mileage + year, data = train_data)
+#summary(refined_linear_model)
+
+# Re-Evaluate second linear model
+refined_predictions_linear <- predict(refined_linear_model, newdata = test_data)
+refined_linear_rmse <- sqrt(mean((test_data$price - refined_predictions_linear)^2))
+#print(paste("Refined Linear RMSE:", refined_linear_rmse))
+
+# Create df with actual vs predicted values
+plot_data <- data.frame(
+  Actual = test_data$price,
+  Predicted = predictions_linear
+)
+```
+
+The first model was run with the full feature set and gave an Adjusted R-squared: 0.9428 and a RMSE of 10559. Meaning our model was able to account for ~95% of the variability involved in estimating the price, while on average the price that was predicted differed from the actual by roughly ~$10k. 
+
+Vairables with p-values less than .05 such as certain trim packages (trim420, trim63 AMG), whether the car is new or not, the mileage, year, and many specific displacement levels significantly impact price. 
+
+For example, having a trim420 package is associated with an increase of ~52,570 in price (holding other variables constant) and mileage, as expected, decreases prices by ~.13 with each mile.  
+
+Non-significant predictors that do not impact price included sound system, most states the vehicle is from, and color. 
+
+```{r linear plot, echo=FALSE, message=FALSE, warning=FALSE}
+# Plot 
+ggplot(data = plot_data, aes(x = Actual, y = Predicted)) +
+  geom_point(color = "blue", alpha = 0.6) + # Data points
+  geom_smooth(method = "lm", color = "red", se = FALSE) + # Best-fit line
+  labs(
+    title = "Actual vs Predicted Prices",
+    x = "Actual Price",
+    y = "Predicted Price"
+  ) +
+  theme_minimal()
+```
+
+But being off by $10k on average in the car market isn't quite the accuracy we'd want when trying to accurately predict a car's price.  
+
+Trying to improve on this model, I took more of an intuitive approach to see if we can vastly simplify our model and improve our RMSE by only taking variables that were statistically significant and what I perceived as generally the most important factors in buying a car - condition, mileage, and year of the vehicle. 
+
+This attempt at refining and simplifying our model reduced our Adjusted R-squared to 0.8726 and provided a RMSE of 15764. So we accounted for less of the variability and are now on average off by ~$16k. With an attempt to greatly simplify we have made the model worse at predicting the price. 
+
+The next iterative approach was to try and regularize the data using Lasso Regression. This method allows us to eliminate some of the features that are irrelevant. This produced a RMSE of 10565. However, this is still slightly higher than our original linear model. Looking at the plot of the residuals of the Lasso Regression, one of the reasons for this may be due to some non-linearity in the data. Additionally, we can notice the spread of residuals increase as the actual price increases (showing heteroscedasticity), meaning our model is not great at predicting expensive car prices. 
+```{r lasso, echo=FALSE, message=FALSE, warning=FALSE}
+# Use Lasso regression to remove features deemed irrelevant
+# built train and test data set - lasso requires matrix
+x_train <- model.matrix(price ~ ., data = train_data)
+y_train <- train_data$price
+
+x_test <- model.matrix(price ~., data = test_data)
+y_test <- test_data$price
+
+# Lasso regression with cross-validation to find the optimal lambda
+lasso_model <- cv.glmnet(x_train, y_train, alpha = 1)
+#plot(lasso_model)
+
+# find best lambda
+best_lambda <-lasso_model$lambda.min
+
+# fit with best lambda
+lasso_model2 <- glmnet(x_train, y_train, alpha = 1, lambda = best_lambda)
+
+# coefficients of the model
+#print(coef(lasso_model2))
+
+# make predictions on test data set
+lasso_predictions <- predict(lasso_model2, s = best_lambda, newx = x_test)
+
+# Calculate RMSE for Lasso Regression
+lasso_rmse <- sqrt(mean((y_test - lasso_predictions)^2))
+print(paste("Lasso RMSE:", lasso_rmse))
+```
+
+```{r lasso plot, echo=FALSE, message=FALSE, warning=FALSE}
+# Residual plot
+residuals <- y_test - lasso_predictions
+plot(y_test, residuals, main = "Residual Plot for Lasso Regression", xlab = "Actual Price", ylab = "Residuals")
+abline(h = 0, col = "red", lty = 2)
+```
+
+In an alternative attempt to get a better predicting model of price, the next approach taken was with a non-linear model using a Random Forest.This will combine multiple decision trees in an effort to improve accuracy and account for outliers we're seeing in the linear model. 
+
+The random forests provides us with a feature importance score that lets us know that trim is the most important feature, followed by state (however from our linear model we see that only state being unspecified or SD plays any statistical significance), year, displacement, and finally mileage in determining a car's price. Intuitively, these features impacting price would all generally make sense. 
+
+The RMSE for the random forest was 6855 and when calculating the multiple-r squared value to compare it to our previous models, we get .9765. Meaning, with this model we can account for ~98% of the variability in price based on these 15 features and on average get that price right within $6900 (much better than our $10k earlier from the linear model). Looking at the residual plot, we notice a more uniform spread, but the model still struggles with accurately predicting the higher priced vehicles. But overall, the random forest provided the best performance at predicting a car's price. 
+
+
+```{r rf, echo = FALSE, message=FALSE, warning=FALSE}
+# Try a non-linear model to improve RMSE: Random Forest
+rf_model <- randomForest(price~ ., data = train_data, importance = TRUE)
+importance_scores <- importance(rf_model)
+importance_scores
+
+# most important variables are trim, state, mileage, year, and displacement.
+# predict on test data
+rf_predictions <- predict(rf_model, newdata = test_data)
+
+# calculate RMSE
+rf_rmse <- sqrt(mean((test_data$price - rf_predictions)^2))
+print(paste("Random Forest RMSE:", rf_rmse))
+```
+
+```{r rf plot, echo=FALSE, message=FALSE, warning=FALSE}
+# Residual plot
+rf_residuals <- test_data$price - rf_predictions
+plot(test_data$price, rf_residuals,
+     main = "Residual Plot for Random Forest",
+     xlab = "Actual Price",
+     ylab = "Residuals",
+     col = "blue", pch = 16)
+abline(h = 0, col = "red", lty = 2)
+```
+
+```{r rf r-squared, echo=FALSE, message=FALSE, warning=FALSE}
+# Calculate SSR (Sum of Squared Residuals)
+ssr <- sum((test_data$price - rf_predictions)^2)
+
+# Calculate TSS (Total Sum of Squares)
+tss <- sum((test_data$price - mean(test_data$price))^2)
+
+# Calculate Pseudo R-squared
+pseudo_r_squared <- 1 - (ssr / tss)
+print(paste("Random Forest Calculated R-squared:", round(pseudo_r_squared, 4)))
+```
